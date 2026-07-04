@@ -1,5 +1,19 @@
 # Changelog
 
+## [v1.8.0] (2026-07-04)
+
+### ✨ New Features
+
+- **Callback-Based Error Handler** (#81): Added `WithErrHandler(cb func(Worker, error))` to set a per-worker error handler callback, and `DefaultErrHandler(cb func(Worker, error))` to set the default error handler for all newly created workers.
+  - The error handler is invoked for all internal errors encountered during job processing (dequeue failures, parse failures, cast failures, etc.).
+  - Replaces the need to listen on the `Errs()` channel for simple error handling scenarios.
+  - Nil-safe: passing `nil` as the callback silently uses a no-op handler.
+
+### 🔧 Refactoring
+
+- **Queue Picker Error Flow** (#80): Changed the `queueManager.next()` to return a `bool` instead of an `error`, simplifying the event loop logic. The `ErrGetNextQueue` sentinel error and `ErrNoItemsRegistered`/`ErrAllItemsEmpty` error variables from `internal/helpers/manager.go` were removed in favor of boolean returns, reducing allocations and improving code clarity.
+  - `Manager.GetMaxLenItem()`, `GetMinLenItem()`, `GetPriorityItem()`, and `GetRoundRobinItem()` now return `(T, bool)` instead of `(T, error)`.
+
 ## [v1.7.0] (2026-05-16)
 
 ### ✨ New Features
