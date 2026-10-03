@@ -6,8 +6,139 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goptics/varmq/mocks"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestGroupJobAcknowledgements(t *testing.T) {
+	items := []Item[string]{{ID: "test-job", Data: "payload"}}
+	tests := []struct {
+		name string
+		bind func(IQueue, chan<- StatusProvider) (Worker, EnqueuedGroupJob)
+	}{
+		{
+			name: "plain worker",
+			bind: func(q IQueue, processed chan<- StatusProvider) (Worker, EnqueuedGroupJob) {
+				w := NewWorker(func(j Job[string]) {
+					processed <- j.(StatusProvider)
+				}, WithAutoRun(false))
+				return w, w.WithQueue(q).AddAll(items)
+			},
+		},
+		{
+			name: "error worker",
+			bind: func(q IQueue, processed chan<- StatusProvider) (Worker, EnqueuedGroupJob) {
+				w := NewErrWorker(func(j Job[string]) error {
+					processed <- j.(StatusProvider)
+					return nil
+				}, WithAutoRun(false))
+				return w, w.WithQueue(q).AddAll(items)
+			},
+		},
+		{
+			name: "result worker",
+			bind: func(q IQueue, processed chan<- StatusProvider) (Worker, EnqueuedGroupJob) {
+				w := NewResultWorker(func(j Job[string]) (int, error) {
+					processed <- j.(StatusProvider)
+					return len(j.Data()), nil
+				}, WithAutoRun(false))
+				return w, w.WithQueue(q).AddAll(items)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		for _, fail := range []bool{false, true} {
+			name := "success"
+			if fail {
+				name = "failure"
+			}
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				q := &acknowledgementQueue{mocks.NewMockPersistentQueue(), make(chan string, 2)}
+				q.ShouldFailAcknowledge = fail
+				processed := make(chan StatusProvider, 1)
+				w, group := tt.bind(q, processed)
+				require.NoError(t, w.Start())
+				t.Cleanup(func() { assert.NoError(t, w.StopAndWait()) })
+				w.Wait()
+
+				select {
+				case id := <-q.acknowledged:
+					assert.Equal(t, "mock-ack-id", id)
+				default:
+					t.Error("group job completion did not acknowledge the queue")
+				}
+				select {
+				case id := <-q.acknowledged:
+					t.Errorf("group job was acknowledged twice: %s", id)
+				default:
+				}
+
+				select {
+				case job := <-processed:
+					if fail {
+						assert.Equal(t, "Finished", job.Status())
+						assert.False(t, job.IsClosed())
+					} else {
+						assert.Equal(t, "Closed", job.Status())
+						assert.True(t, job.IsClosed())
+					}
+				default:
+					t.Error("group job was not processed")
+				}
+
+				if fail {
+					assert.Equal(t, 1, group.NumPending())
+				} else {
+					assert.Zero(t, group.NumPending())
+					group.Wait()
+				}
+				select {
+				case err := <-w.Errs():
+					if fail {
+						assert.ErrorIs(t, err, ErrAcknowledgeJob)
+						assert.Contains(t, err.Error(), "g:test-job")
+						assert.Contains(t, err.Error(), "mock-ack-id")
+					} else {
+						t.Errorf("unexpected worker error: %v", err)
+					}
+				default:
+					if fail {
+						t.Error("rejected acknowledgement did not reach the worker error channel")
+					}
+				}
+
+				switch group := group.(type) {
+				case EnqueuedErrGroupJob:
+					assertGroupResponseChannel(t, group.Errs(), fail)
+				case EnqueuedResultGroupJob[int]:
+					select {
+					case result, ok := <-group.Results():
+						require.True(t, ok)
+						assert.Equal(t, "g:test-job", result.JobId)
+						assert.Equal(t, len("payload"), result.Data)
+						assert.NoError(t, result.Err)
+					default:
+						t.Fatal("group job did not return its result")
+					}
+					assertGroupResponseChannel(t, group.Results(), fail)
+				}
+			})
+		}
+	}
+}
+
+func assertGroupResponseChannel[T any](t *testing.T, responses <-chan T, fail bool) {
+	t.Helper()
+	select {
+	case _, ok := <-responses:
+		require.False(t, ok, "group response channel contained another response")
+		assert.False(t, fail, "group response channel closed after rejected acknowledgement")
+	default:
+		assert.True(t, fail, "group response channel remained open after acknowledgement")
+	}
+}
 
 func TestGroupJob(t *testing.T) {
 	t.Run("group job creation with newGroupJob", func(t *testing.T) {

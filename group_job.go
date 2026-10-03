@@ -63,7 +63,9 @@ func (gj *groupJob[T]) Close() error {
 		return err
 	}
 
-	gj.ack()
+	if err := gj.ack(); err != nil {
+		return err
+	}
 	gj.changeStatus(closed)
 	gj.wgc.Done()
 
@@ -129,7 +131,9 @@ func (gj *resultGroupJob[T, R]) Close() error {
 		return err
 	}
 
-	gj.ack()
+	if err := gj.ack(); err != nil {
+		return err
+	}
 	gj.changeStatus(closed)
 	gj.wgc.Done()
 
@@ -200,7 +204,9 @@ func (gj *errorGroupJob[T]) Close() error {
 		return err
 	}
 
-	gj.ack()
+	if err := gj.ack(); err != nil {
+		return err
+	}
 	gj.changeStatus(closed)
 	gj.wgc.Done()
 
